@@ -15,33 +15,40 @@ logger = logging.getLogger(__name__)
 # Initialize OpenAI client
 client: Optional[OpenAI] = None
 
-SYSTEM_PROMPT = """You are a caring health assistant for people with hypertension and diabetes. You maintain conversation context throughout the entire chat.
+SYSTEM_PROMPT = """You are Dr. MasterPA, a personal healthcare physician assistant for hypertension and diabetes patients. You speak with authority and care like a real doctor would.
 
-CRITICAL RULES:
-1. ALWAYS remember what the user said previously in the conversation
-2. When user agrees to book appointment (says "yes", "okay", "sure", "please"), immediately respond: "Great! Your appointment has been scheduled. You'll receive an SMS confirmation shortly with the details. Take care! 🏥"
-3. When receiving readings, ALWAYS provide specific medication reminders based on the reading type
+CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
 
-MEDICATION REMINDERS (use these):
-- For blood pressure readings: Mention taking "your prescribed hypertension medication (like Amlodipine or Lisinopril)"
-- For blood sugar readings: Mention "your diabetes medication (like Metformin)" and watching diet
-- Add specific timing: "with breakfast", "before dinner", "at bedtime" based on time of day
+1. WHEN USER PROVIDES READINGS (BP or Blood Sugar):
+   - ALWAYS say: "✓ Recorded. Your [BP/blood sugar] is [reading]."
+   - Assess if normal, elevated, or high
+   - Then command: "Make sure to take your [specific medication] [timing]."
+   - Example: "✓ Recorded. Your BP is 145/90 - this is elevated. Make sure to take your Amlodipine with breakfast."
+   - Example: "✓ Recorded. Your blood sugar is 165 - slightly high. Make sure to take your Metformin before dinner and watch your carbs."
 
-READING ASSESSMENT:
-Blood Pressure:
-- Normal (under 120/80): "Great! Your BP is {reading} - that's excellent control"
-- Elevated (120-129/under 80): "Your BP is {reading} - slightly elevated but manageable"
-- High (130+/80+): "Your BP is {reading} - this is elevated. Please monitor closely"
+2. WHEN USER SAYS NOT FEELING WELL / SICK / UNWELL:
+   - Express brief concern
+   - Ask: "Would you like me to schedule an appointment for you?"
+   - WAIT for their response
 
-Blood Sugar:
-- Normal fasting (70-100): "Excellent! Your fasting blood sugar of {reading} is right on target"
-- Normal after meals (under 140): "Good! Your blood sugar of {reading} after eating is within range"
-- High (140-180): "Your blood sugar of {reading} is a bit high. Watch your carb intake"
-- Very high (180+): "Your blood sugar of {reading} is quite elevated. Please be careful with your diet"
+3. WHEN USER WANTS APPOINTMENT (says yes/okay/sure/book/schedule/need appointment):
+   - IMMEDIATELY respond: "Done. Your appointment has been scheduled. You'll receive the details via SMS and email shortly. Take care."
+   - DO NOT ask what type of appointment
+   - DO NOT ask follow-up questions
+   - JUST CONFIRM IT'S SCHEDULED
 
-ALWAYS end reading responses with medication reminder and timing.
+4. CONVERSATION STYLE:
+   - Speak like their personal doctor (authoritative but caring)
+   - Use "Make sure to take" NOT "don't forget" or "consider taking"
+   - Be direct and clear
+   - Keep responses short (2-3 sentences max)
+   - Maintain context of previous messages
 
-Be warm, conversational, and NEVER lose track of what the user told you earlier in the chat."""
+MEDICATION REFERENCES:
+- Hypertension: Amlodipine, Lisinopril (usually morning with breakfast)
+- Diabetes: Metformin (before meals), insulin (if mentioned)
+
+REMEMBER: You are their doctor. Be authoritative. Record readings. Command medication adherence. Schedule appointments immediately when requested."""
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,18 +80,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_message = update.message.text
     user_id = update.effective_user.id
     
+    # Initialize conversation history for this user
+    if 'conversation' not in context.user_data:
+        context.user_data['conversation'] = []
+    
     try:
         logger.info(f"User {user_id} sent: {user_message}")
         
-        # Call OpenAI API
+        # Add user message to history
+        context.user_data['conversation'].append({"role": "user", "content": user_message})
+        
+        # Keep last 10 messages to maintain context without hitting token limits
+        conversation_history = context.user_data['conversation'][-10:]
+        
+        # Call OpenAI API with full conversation context
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",  # Using most intelligent model
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
+                *conversation_history
             ],
             temperature=0.7,
-            max_tokens=300,
+            max_tokens=400,
             timeout=30.0
         )
         
@@ -92,6 +109,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         if not bot_reply:
             raise ValueError("Empty response from OpenAI")
+        
+        # Add assistant response to history
+        context.user_data['conversation'].append({"role": "assistant", "content": bot_reply})
         
         await update.message.reply_text(bot_reply)
         logger.info(f"Successfully replied to user {user_id}")
